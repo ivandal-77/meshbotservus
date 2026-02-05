@@ -10,6 +10,9 @@ meshtastic>=2.2.0
 # Using the new Google Generative AI SDK v2 (google-genai)
 google-genai>=0.2.0
 
+# Telegram Bot integration (optional)
+python-telegram-bot>=20.0
+
 # Async networking
 asyncio-mqtt>=0.16.1
 

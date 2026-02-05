@@ -89,7 +89,9 @@ class ProxyThread(QThread):
             radio_port=self.config['radio_port'],
             channel_index=self.config['channel_index'],
             response_delay=self.config['response_delay'],
-            on_ready_callback=on_proxy_ready
+            on_ready_callback=on_proxy_ready,
+            telegram_bot_token=self.config.get('telegram_bot_token') or None,
+            telegram_chat_id=self.config.get('telegram_chat_id') or None
         )
 
         try:
@@ -204,13 +206,13 @@ class ProxyGUI(QMainWindow):
         radio_layout.addWidget(self.radio_port_input)
         config_layout.addLayout(radio_layout)
 
-        # Gemini AI Channel and delay
+        # Bot Messages Channel and delay
         channel_layout = QHBoxLayout()
-        channel_layout.addWidget(QLabel("Gemini AI Channel:"))
+        channel_layout.addWidget(QLabel("Bot Messages Channel:"))
         self.channel_input = QSpinBox()
         self.channel_input.setRange(0, 7)
         self.channel_input.setValue(2)
-        self.channel_input.setToolTip("Channel index for Gemini AI /gem responses")
+        self.channel_input.setToolTip("Channel for Gemini AI /gem responses and Telegram messages")
         channel_layout.addWidget(self.channel_input)
         channel_layout.addWidget(QLabel("Response Delay:"))
         self.delay_input = QDoubleSpinBox()
@@ -229,6 +231,23 @@ class ProxyGUI(QMainWindow):
         self.api_key_input.setPlaceholderText("Optional - for /gem commands")
         api_layout.addWidget(self.api_key_input)
         config_layout.addLayout(api_layout)
+
+        # Telegram Bot Token
+        telegram_token_layout = QHBoxLayout()
+        telegram_token_layout.addWidget(QLabel("Telegram Bot Token:"))
+        self.telegram_token_input = QLineEdit()
+        self.telegram_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.telegram_token_input.setPlaceholderText("Optional - from @BotFather")
+        telegram_token_layout.addWidget(self.telegram_token_input)
+        config_layout.addLayout(telegram_token_layout)
+
+        # Telegram Chat ID
+        telegram_chat_layout = QHBoxLayout()
+        telegram_chat_layout.addWidget(QLabel("Telegram Chat ID:"))
+        self.telegram_chat_input = QLineEdit()
+        self.telegram_chat_input.setPlaceholderText("Optional - channel/group ID")
+        telegram_chat_layout.addWidget(self.telegram_chat_input)
+        config_layout.addLayout(telegram_chat_layout)
 
         # SSL Verification option
         ssl_layout = QHBoxLayout()
@@ -512,6 +531,8 @@ class ProxyGUI(QMainWindow):
             'channel_index': self.channel_input.value(),
             'response_delay': self.delay_input.value(),
             'gemini_api_key': self.api_key_input.text(),
+            'telegram_bot_token': self.telegram_token_input.text(),
+            'telegram_chat_id': self.telegram_chat_input.text(),
             'disable_ssl_verify': self.disable_ssl_check.isChecked()
         }
 
@@ -551,6 +572,8 @@ class ProxyGUI(QMainWindow):
         self.channel_input.setEnabled(enabled)
         self.delay_input.setEnabled(enabled)
         self.api_key_input.setEnabled(enabled)
+        self.telegram_token_input.setEnabled(enabled)
+        self.telegram_chat_input.setEnabled(enabled)
         self.disable_ssl_check.setEnabled(enabled)
 
     def update_status(self, status):

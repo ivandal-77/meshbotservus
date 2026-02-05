@@ -169,7 +169,9 @@ class MultiClientProxy:
                  radio_port: int = DEFAULT_RADIO_PORT,
                  channel_index: int = DEFAULT_CHANNEL_INDEX,
                  response_delay: float = DEFAULT_RESPONSE_DELAY,
-                 on_ready_callback=None):
+                 on_ready_callback=None,
+                 telegram_bot_token: Optional[str] = None,
+                 telegram_chat_id: Optional[str] = None):
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.radio_host = radio_host
@@ -191,6 +193,22 @@ class MultiClientProxy:
 
         # AI integration
         self.gemini = GeminiIntegration()
+
+        # Telegram integration
+        self.telegram = None
+        if telegram_bot_token and telegram_chat_id:
+            try:
+                from telegram_bridge import TelegramBridge
+                self.telegram = TelegramBridge(
+                    telegram_bot_token,
+                    telegram_chat_id,
+                    message_callback=self._send_telegram_message_to_radio
+                )
+                logger.info("Telegram bridge initialized")
+            except ImportError:
+                logger.warning("Telegram bridge not available (python-telegram-bot not installed)")
+            except Exception as e:
+                logger.error(f"Failed to initialize Telegram bridge: {e}")
 
         # Control
         self.running = False
@@ -409,10 +427,88 @@ class MultiClientProxy:
             await self.broadcast_to_clients(client_frame)
             logger.info(f"AI response broadcast to clients ({len(client_frame)} bytes)")
 
+            # Also forward to Telegram if enabled
+            if self.telegram and self.telegram.running:
+                await self.telegram.send_radio_message("Gemini AI", trimmed)
+                logger.info(f"AI response forwarded to Telegram")
+
         except ImportError as e:
             logger.error(f"Meshtastic protobuf not available: {e}")
         except Exception as e:
             logger.error(f"Failed to send AI response: {e}")
+
+    async def _send_telegram_message_to_radio(self, text: str) -> None:
+        """Send a message from Telegram to the radio."""
+        try:
+            from meshtastic import mesh_pb2, portnums_pb2
+
+            logger.info(f"Sending Telegram message to radio: {text[:50]}...")
+
+            # Trim message if too long
+            trimmed = text[:200]
+
+            # Check if this is a /gem command (process it but still forward)
+            # Text format is: [TG:username] /gem question
+            if '/gem' in text:
+                # Extract the /gem command (everything after /gem)
+                gem_index = text.find('/gem')
+                original_command = text[gem_index:]  # /gem question
+
+                # Extract the username for sender_id
+                if text.startswith('[TG:') and ']' in text:
+                    username = text[4:text.find(']')]
+                    sender_id = f"telegram_{username}"
+                else:
+                    sender_id = "telegram_user"
+
+                logger.info(f"[Telegram] Processing /gem command from {sender_id}")
+                response = self.gemini.process_message(sender_id, original_command)
+                if response:
+                    # Send AI response on the bot messages channel
+                    asyncio.create_task(self.send_ai_response(response, channel=self.channel_index))
+                # Continue to forward the original /gem message below
+
+            # Generate unique packet ID
+            packet_id = self._generate_packet_id()
+
+            # Create protobuf message for radio (ToRadio)
+            mesh_packet = mesh_pb2.MeshPacket()
+            mesh_packet.id = packet_id
+            mesh_packet.to = 0xFFFFFFFF  # Broadcast
+            mesh_packet.channel = self.channel_index
+            mesh_packet.want_ack = True
+            mesh_packet.hop_limit = 7
+            mesh_packet.decoded.portnum = portnums_pb2.TEXT_MESSAGE_APP
+            mesh_packet.decoded.payload = trimmed.encode('utf-8')
+
+            to_radio = mesh_pb2.ToRadio()
+            to_radio.packet.CopyFrom(mesh_packet)
+
+            payload = to_radio.SerializeToString()
+            header = MESHTASTIC_MAGIC + struct.pack('>H', len(payload))
+            frame = header + payload
+
+            # Send to radio
+            if await self.send_to_radio(frame):
+                logger.info(f"Telegram message sent to radio ({len(frame)} bytes)")
+            else:
+                logger.error("Failed to send Telegram message to radio")
+
+            # Also broadcast to connected clients so they see the Telegram message
+            from_radio = mesh_pb2.FromRadio()
+            from_radio.packet.CopyFrom(mesh_packet)
+
+            client_payload = from_radio.SerializeToString()
+            client_header = MESHTASTIC_MAGIC + struct.pack('>H', len(client_payload))
+            client_frame = client_header + client_payload
+
+            await self.broadcast_to_clients(client_frame)
+            logger.info(f"Telegram message broadcast to clients ({len(client_frame)} bytes)")
+
+        except ImportError as e:
+            logger.error(f"Meshtastic protobuf not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send Telegram message to radio: {e}")
 
     async def handle_client_data(self, client: ClientConnection, data: bytes) -> None:
         """Process data from a client and forward to radio."""
@@ -424,6 +520,12 @@ class MultiClientProxy:
             if parsed:
                 sender_id, channel, text = parsed
                 logger.info(f"[Client {client.id}→Radio] Forwarding message on ch{channel}: {text[:50]}...")
+
+                # Forward to Telegram if enabled
+                if self.telegram and self.telegram.running:
+                    asyncio.create_task(
+                        self.telegram.send_radio_message(f"Client-{sender_id}", text)
+                    )
 
                 if text.startswith('/gem'):
                     response = self.gemini.process_message(sender_id, text)
@@ -503,6 +605,12 @@ class MultiClientProxy:
             if parsed:
                 sender_id, channel, text = parsed
                 logger.info(f"[Radio→Clients] Forwarding message from ch{channel}: {text[:50]}...")
+
+                # Forward to Telegram if enabled
+                if self.telegram and self.telegram.running:
+                    asyncio.create_task(
+                        self.telegram.send_radio_message(f"Node-{sender_id}", text)
+                    )
 
                 # Check for /gem command from radio
                 if text.startswith('/gem'):
@@ -592,6 +700,12 @@ class MultiClientProxy:
         # Start radio reader task
         radio_task = asyncio.create_task(self.radio_reader_task())
 
+        # Start Telegram bot if configured
+        if self.telegram:
+            telegram_started = await self.telegram.start()
+            if not telegram_started:
+                logger.warning("Telegram bot failed to start, continuing without Telegram integration")
+
         # Start client server
         self.server = await asyncio.start_server(
             self.handle_client,
@@ -605,13 +719,17 @@ class MultiClientProxy:
         logger.info("=" * 60)
         logger.info(f"Listening on: {addr[0]}:{addr[1]}")
         logger.info(f"Radio: {self.radio_host}:{self.radio_port} (single connection)")
-        logger.info(f"Gemini AI channel: {self.channel_index}")
+        logger.info(f"Bot messages channel: {self.channel_index}")
         logger.info(f"Response delay: {self.response_delay}s")
         logger.info(f"Gemini AI: {'enabled' if self.gemini.ai_handler else 'disabled'}")
+        logger.info(f"Telegram: {'enabled' if self.telegram and self.telegram.running else 'disabled'}")
         logger.info("=" * 60)
         logger.info("Multiple clients can connect simultaneously")
         logger.info("All clients receive all radio messages")
         logger.info("Send /gem <question> to get AI responses")
+        if self.telegram and self.telegram.running:
+            logger.info("Radio messages are forwarded to Telegram")
+            logger.info("Telegram messages are forwarded to radio")
         logger.info("=" * 60)
 
         # Notify that server is ready
@@ -629,6 +747,10 @@ class MultiClientProxy:
         """Stop the proxy server."""
         logger.info("Stopping proxy...")
         self.running = False
+
+        # Stop Telegram bot
+        if self.telegram:
+            await self.telegram.stop()
 
         # Close server
         if self.server:

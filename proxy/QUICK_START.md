@@ -4,13 +4,13 @@
 
 ### From Source
 ```bash
-cd /Users/ivan.dallaserra/Git/Claude/meshbotservus/proxy
+cd proxy
 ./run_gui.sh
 ```
 
 ### Standalone App
 ```bash
-open /Users/ivan.dallaserra/Git/Claude/meshbotservus/proxy/dist/MeshtasticProxy.app
+open dist/MeshtasticProxy.app
 ```
 
 ## After Modifying Code
@@ -19,7 +19,7 @@ open /Users/ivan.dallaserra/Git/Claude/meshbotservus/proxy/dist/MeshtasticProxy.
 
 Rebuild the standalone app:
 ```bash
-cd /Users/ivan.dallaserra/Git/Claude/meshbotservus/proxy
+cd proxy
 ./build.sh
 ```
 

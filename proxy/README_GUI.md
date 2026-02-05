@@ -119,7 +119,7 @@ After making changes to any of the source files (`multi_client_proxy.py`, `proxy
 ### Quick Rebuild
 
 ```bash
-cd /Users/ivan.dallaserra/Git/Claude/meshbotservus/proxy
+cd proxy
 ./build.sh
 ```
 
