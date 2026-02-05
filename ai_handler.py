@@ -41,15 +41,63 @@ class AIHandler:
 
     def _setup_model(self):
         try:
+            import ssl
+            import os
+
+            # Check if SSL verification should be disabled (for corporate proxies/firewalls)
+            disable_ssl = os.getenv('DISABLE_SSL_VERIFY', 'false').lower() == 'true'
+
+            if disable_ssl:
+                # Disable SSL verification for environments with self-signed certificates
+                # WARNING: This is insecure and should only be used for testing
+                logger.warning("SSL verification disabled (DISABLE_SSL_VERIFY=true)")
+
+                # Comprehensive SSL bypass for corporate proxies
+                os.environ['CURL_CA_BUNDLE'] = ''
+                os.environ['REQUESTS_CA_BUNDLE'] = ''
+                os.environ['SSL_CERT_FILE'] = ''
+                os.environ['SSL_CERT_DIR'] = ''
+
+                # Patch ssl context globally
+                ssl._create_default_https_context = ssl._create_unverified_context
+
+                # Disable urllib3 SSL warnings
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                except:
+                    pass
+
+                # Patch httpx if available (used by google-genai)
+                try:
+                    import httpx
+                    # Create a custom transport that doesn't verify SSL
+                    original_client_init = httpx.Client.__init__
+                    def patched_init(self, *args, **kwargs):
+                        kwargs['verify'] = False
+                        original_client_init(self, *args, **kwargs)
+                    httpx.Client.__init__ = patched_init
+
+                    original_async_client_init = httpx.AsyncClient.__init__
+                    def patched_async_init(self, *args, **kwargs):
+                        kwargs['verify'] = False
+                        original_async_client_init(self, *args, **kwargs)
+                    httpx.AsyncClient.__init__ = patched_async_init
+                except:
+                    pass
+
             self.client = genai.Client(api_key=self.api_key)
+
             # List available models and pick the first supported one for free accounts
             available_models = [m for m in self.client.models.list() if hasattr(m, 'name')]
-            print("Available Gemini models:")
+            logger.info("Available Gemini models:")
             for m in available_models:
-                print("-", m.name)
-            # Force use of gemini-pro-latest for free accounts
+                logger.info(f"  - {m.name}")
+
+            # Force use of gemini-2.5-flash
             self.model_name = "gemini-2.5-flash"
-            logger.info(f"Gemini client initialized successfully; using model '{self.model_name}'")
+            ssl_status = "SSL verification disabled" if disable_ssl else "SSL verification enabled"
+            logger.info(f"Gemini client initialized successfully; using model '{self.model_name}' ({ssl_status})")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini client: {e}")
             raise

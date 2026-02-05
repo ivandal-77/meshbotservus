@@ -27,10 +27,10 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+#  Keep .spec files in version control (they're build configurations, not generated)
+#  Only ignore generated manifest files
 *.manifest
-*.spec
+# *.spec  # COMMENTED OUT - we want to keep PyInstaller spec files
 
 # Installer logs
 pip-log.txt
@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific
+# PyInstaller build outputs
+dist/
+build/
+*.app/
+
+# User settings and secrets
+proxy/settings.json
+.DS_Store
+
+# Telegram/Gemini API keys (never commit!)
+*.env.local
+*_secrets.txt
