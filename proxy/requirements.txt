@@ -1,0 +1,16 @@
+# Meshtastic Proxy GUI Requirements
+
+# Qt GUI Framework
+PyQt6>=6.4.0
+
+# Meshtastic Protocol
+meshtastic>=2.2.0
+
+# For Gemini AI integration (optional)
+google-generativeai>=0.3.0
+
+# Async networking
+asyncio-mqtt>=0.16.1
+
+# Build tool
+pyinstaller>=5.13.0
