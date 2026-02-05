@@ -72,33 +72,70 @@ class ProxyThread(QThread):
         if self.config.get('gemini_api_key'):
             os.environ['GEMINI_API_KEY'] = self.config['gemini_api_key']
 
-        # Create proxy instance
+        # Set SSL verification flag
+        if self.config.get('disable_ssl_verify'):
+            os.environ['DISABLE_SSL_VERIFY'] = 'true'
+        else:
+            os.environ.pop('DISABLE_SSL_VERIFY', None)
+
+        # Create proxy instance with ready callback
+        def on_proxy_ready():
+            self.status_signal.emit("Running")
+
         self.proxy = MultiClientProxy(
             listen_host=self.config['listen_host'],
             listen_port=self.config['listen_port'],
             radio_host=self.config['radio_host'],
             radio_port=self.config['radio_port'],
             channel_index=self.config['channel_index'],
-            response_delay=self.config['response_delay']
+            response_delay=self.config['response_delay'],
+            on_ready_callback=on_proxy_ready
         )
 
         try:
             self.status_signal.emit("Starting...")
             self.loop.run_until_complete(self.proxy.start())
+        except asyncio.CancelledError:
+            self.log_signal.emit("Proxy stopped by user")
         except Exception as e:
             self.log_signal.emit(f"ERROR: {e}")
             self.status_signal.emit("Error")
         finally:
+            # Clean up all pending tasks
+            try:
+                pending = asyncio.all_tasks(self.loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                self.loop.close()
+            except:
+                pass
             self.running = False
             self.status_signal.emit("Stopped")
 
     def stop(self):
         """Stop the proxy."""
-        if self.proxy and self.loop:
-            self.loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self.proxy.stop())
-            )
-            self.running = False
+        if not self.running:
+            return
+
+        self.running = False
+        self.log_signal.emit("Stopping proxy...")
+
+        if self.proxy and self.loop and not self.loop.is_closed():
+            try:
+                # Create a future to run the stop coroutine
+                future = asyncio.run_coroutine_threadsafe(self.proxy.stop(), self.loop)
+                # Wait for stop to complete (with timeout)
+                future.result(timeout=5.0)
+            except Exception as e:
+                self.log_signal.emit(f"Error during stop: {e}")
+
+            # Cancel all tasks and stop the loop
+            try:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except:
+                pass
 
 
 class ProxyGUI(QMainWindow):
@@ -167,18 +204,20 @@ class ProxyGUI(QMainWindow):
         radio_layout.addWidget(self.radio_port_input)
         config_layout.addLayout(radio_layout)
 
-        # Channel and delay
+        # Gemini AI Channel and delay
         channel_layout = QHBoxLayout()
-        channel_layout.addWidget(QLabel("Channel:"))
+        channel_layout.addWidget(QLabel("Gemini AI Channel:"))
         self.channel_input = QSpinBox()
         self.channel_input.setRange(0, 7)
         self.channel_input.setValue(2)
+        self.channel_input.setToolTip("Channel index for Gemini AI /gem responses")
         channel_layout.addWidget(self.channel_input)
         channel_layout.addWidget(QLabel("Response Delay:"))
         self.delay_input = QDoubleSpinBox()
         self.delay_input.setRange(0, 60)
         self.delay_input.setValue(2.0)
         self.delay_input.setSuffix(" s")
+        self.delay_input.setToolTip("Delay in seconds before sending AI response")
         channel_layout.addWidget(self.delay_input)
         config_layout.addLayout(channel_layout)
 
@@ -191,6 +230,14 @@ class ProxyGUI(QMainWindow):
         api_layout.addWidget(self.api_key_input)
         config_layout.addLayout(api_layout)
 
+        # SSL Verification option
+        ssl_layout = QHBoxLayout()
+        self.disable_ssl_check = QCheckBox("Disable SSL verification (for corporate proxies)")
+        self.disable_ssl_check.setToolTip("WARNING: Only enable if behind a corporate proxy with self-signed certificates. Insecure!")
+        ssl_layout.addWidget(self.disable_ssl_check)
+        ssl_layout.addStretch()
+        config_layout.addLayout(ssl_layout)
+
         config_group.setLayout(config_layout)
         left_panel.addWidget(config_group)
 
@@ -200,6 +247,7 @@ class ProxyGUI(QMainWindow):
 
         # Start/Stop button
         self.start_stop_btn = QPushButton("Start Proxy")
+        self.start_stop_btn.setObjectName("startStopButton")
         self.start_stop_btn.setMinimumHeight(50)
         self.start_stop_btn.clicked.connect(self.toggle_proxy)
         control_layout.addWidget(self.start_stop_btn)
@@ -294,23 +342,130 @@ class ProxyGUI(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def apply_dark_theme(self):
-        """Apply a dark color scheme."""
-        dark_palette = QPalette()
-        dark_palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
-        dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-        dark_palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
-        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(25, 25, 25))
-        dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
-        dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
-        dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-        dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
-        dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-        dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(35, 35, 35))
+        """Apply a modern color scheme."""
+        palette = QPalette()
 
-        self.setPalette(dark_palette)
+        # Lighter, more modern color scheme
+        palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 48))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(230, 230, 230))
+        palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 32))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 48))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(240, 240, 240))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(30, 30, 32))
+        palette.setColor(QPalette.ColorRole.Text, QColor(230, 230, 230))
+        palette.setColor(QPalette.ColorRole.Button, QColor(60, 60, 64))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(230, 230, 230))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 100, 100))
+        palette.setColor(QPalette.ColorRole.Link, QColor(100, 150, 255))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+        palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.white)
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(150, 150, 150))
+
+        self.setPalette(palette)
+
+        # Minimal, clean styling
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #2d2d30;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                margin-top: 12px;
+                padding-top: 8px;
+                background-color: #2d2d30;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #e6e6e6;
+            }
+            QPushButton {
+                background-color: #3c3c40;
+                border: 1px solid #4e4e52;
+                border-radius: 3px;
+                padding: 6px 12px;
+                color: #e6e6e6;
+            }
+            QPushButton:hover {
+                background-color: #505054;
+                border: 1px solid #5e5e62;
+            }
+            QPushButton:pressed {
+                background-color: #2c2c30;
+            }
+            QPushButton#startStopButton {
+                font-size: 13px;
+                font-weight: bold;
+                padding: 12px;
+            }
+            QLineEdit, QSpinBox, QDoubleSpinBox {
+                background-color: #1e1e20;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                padding: 4px;
+                color: #e6e6e6;
+            }
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #0078d7;
+            }
+            QComboBox {
+                background-color: #1e1e20;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                padding: 4px;
+                color: #e6e6e6;
+            }
+            QComboBox:hover {
+                border: 1px solid #5e5e62;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #e6e6e6;
+                margin-right: 5px;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #e6e6e6;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 2px;
+                border: 1px solid #3e3e42;
+                background-color: #1e1e20;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #0078d7;
+                border: 1px solid #0078d7;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #5e5e62;
+            }
+            QTextEdit {
+                background-color: #1e1e20;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                color: #e6e6e6;
+            }
+            QListWidget {
+                background-color: #1e1e20;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                color: #e6e6e6;
+            }
+            QLabel {
+                color: #e6e6e6;
+            }
+        """)
 
     def setup_logging(self):
         """Set up logging to capture to GUI."""
@@ -356,7 +511,8 @@ class ProxyGUI(QMainWindow):
             'radio_port': self.radio_port_input.value(),
             'channel_index': self.channel_input.value(),
             'response_delay': self.delay_input.value(),
-            'gemini_api_key': self.api_key_input.text()
+            'gemini_api_key': self.api_key_input.text(),
+            'disable_ssl_verify': self.disable_ssl_check.isChecked()
         }
 
         # Save settings
@@ -395,6 +551,7 @@ class ProxyGUI(QMainWindow):
         self.channel_input.setEnabled(enabled)
         self.delay_input.setEnabled(enabled)
         self.api_key_input.setEnabled(enabled)
+        self.disable_ssl_check.setEnabled(enabled)
 
     def update_status(self, status):
         """Update the status label."""
@@ -446,6 +603,7 @@ class ProxyGUI(QMainWindow):
         self.settings.setValue('radio_port', self.radio_port_input.value())
         self.settings.setValue('channel_index', self.channel_input.value())
         self.settings.setValue('response_delay', self.delay_input.value())
+        self.settings.setValue('disable_ssl_verify', self.disable_ssl_check.isChecked())
         # Note: API key is not saved for security
 
     def load_settings(self):
@@ -456,6 +614,7 @@ class ProxyGUI(QMainWindow):
         self.radio_port_input.setValue(int(self.settings.value('radio_port', 4403)))
         self.channel_input.setValue(int(self.settings.value('channel_index', 2)))
         self.delay_input.setValue(float(self.settings.value('response_delay', 2.0)))
+        self.disable_ssl_check.setChecked(self.settings.value('disable_ssl_verify', 'false') == 'true')
 
     def closeEvent(self, event):
         """Handle window close event."""

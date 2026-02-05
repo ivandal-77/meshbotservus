@@ -168,13 +168,15 @@ class MultiClientProxy:
                  radio_host: str = DEFAULT_RADIO_HOST,
                  radio_port: int = DEFAULT_RADIO_PORT,
                  channel_index: int = DEFAULT_CHANNEL_INDEX,
-                 response_delay: float = DEFAULT_RESPONSE_DELAY):
+                 response_delay: float = DEFAULT_RESPONSE_DELAY,
+                 on_ready_callback=None):
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.radio_host = radio_host
         self.radio_port = radio_port
         self.channel_index = channel_index
         self.response_delay = response_delay
+        self.on_ready_callback = on_ready_callback
 
         # Client management
         self.clients: Dict[int, ClientConnection] = {}
@@ -192,6 +194,7 @@ class MultiClientProxy:
 
         # Control
         self.running = False
+        self.server = None
 
     async def connect_to_radio(self) -> bool:
         """Establish connection to the radio."""
@@ -420,7 +423,7 @@ class MultiClientProxy:
             parsed = self.try_parse_text_message(payload)
             if parsed:
                 sender_id, channel, text = parsed
-                logger.info(f"[Client {client.id}] Detected message on ch{channel}: {text[:50]}...")
+                logger.info(f"[Client {client.id}→Radio] Forwarding message on ch{channel}: {text[:50]}...")
 
                 if text.startswith('/gem'):
                     response = self.gemini.process_message(sender_id, text)
@@ -428,8 +431,9 @@ class MultiClientProxy:
                         # Pass the channel so response goes to same channel
                         asyncio.create_task(self.send_ai_response(response, channel=channel))
 
-        # Forward to radio
+        # Forward raw data to radio (preserves channel)
         await self.send_to_radio(data)
+        logger.debug(f"[Client {client.id}→Radio] Forwarded {len(data)} bytes of raw data to radio (channel preserved)")
 
     async def handle_client(self,
                            reader: asyncio.StreamReader,
@@ -498,7 +502,7 @@ class MultiClientProxy:
             parsed = self.try_parse_text_message(payload)
             if parsed:
                 sender_id, channel, text = parsed
-                logger.info(f"[Radio] Detected message on ch{channel}: {text[:50]}...")
+                logger.info(f"[Radio→Clients] Forwarding message from ch{channel}: {text[:50]}...")
 
                 # Check for /gem command from radio
                 if text.startswith('/gem'):
@@ -508,8 +512,9 @@ class MultiClientProxy:
                         # Pass the channel so response goes to same channel
                         asyncio.create_task(self.send_ai_response(response, channel=channel))
 
-        # Broadcast raw data to all connected clients
+        # Broadcast raw data to all connected clients (preserves channel)
         await self.broadcast_to_clients(data)
+        logger.debug(f"[Radio→Clients] Broadcast {len(data)} bytes of raw data to all clients (channel preserved)")
 
     def _debug_from_radio(self, payload: bytes) -> None:
         """Debug helper to decode and log FromRadio messages."""
@@ -570,28 +575,37 @@ class MultiClientProxy:
         """Start the proxy server."""
         self.running = True
 
-        # Connect to radio first
-        if not await self.connect_to_radio():
-            logger.error("Failed to connect to radio, exiting")
-            return
+        # Connect to radio with retries
+        max_retries = 3
+        retry_delay = 2
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"Radio connection attempt {attempt}/{max_retries}")
+            if await self.connect_to_radio():
+                break
+            if attempt < max_retries:
+                logger.warning(f"Connection failed, retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+        else:
+            logger.error(f"Failed to connect to radio after {max_retries} attempts")
+            raise Exception(f"Could not connect to radio at {self.radio_host}:{self.radio_port}")
 
         # Start radio reader task
         radio_task = asyncio.create_task(self.radio_reader_task())
 
         # Start client server
-        server = await asyncio.start_server(
+        self.server = await asyncio.start_server(
             self.handle_client,
             self.listen_host,
             self.listen_port
         )
 
-        addr = server.sockets[0].getsockname()
+        addr = self.server.sockets[0].getsockname()
         logger.info("=" * 60)
         logger.info("Meshtastic Multi-Client TCP Proxy Started")
         logger.info("=" * 60)
         logger.info(f"Listening on: {addr[0]}:{addr[1]}")
         logger.info(f"Radio: {self.radio_host}:{self.radio_port} (single connection)")
-        logger.info(f"Channel index: {self.channel_index}")
+        logger.info(f"Gemini AI channel: {self.channel_index}")
         logger.info(f"Response delay: {self.response_delay}s")
         logger.info(f"Gemini AI: {'enabled' if self.gemini.ai_handler else 'disabled'}")
         logger.info("=" * 60)
@@ -600,9 +614,13 @@ class MultiClientProxy:
         logger.info("Send /gem <question> to get AI responses")
         logger.info("=" * 60)
 
+        # Notify that server is ready
+        if self.on_ready_callback:
+            self.on_ready_callback()
+
         try:
-            async with server:
-                await server.serve_forever()
+            async with self.server:
+                await self.server.serve_forever()
         finally:
             self.running = False
             radio_task.cancel()
@@ -611,6 +629,15 @@ class MultiClientProxy:
         """Stop the proxy server."""
         logger.info("Stopping proxy...")
         self.running = False
+
+        # Close server
+        if self.server:
+            try:
+                self.server.close()
+                await self.server.wait_closed()
+                logger.info("Server stopped")
+            except Exception as e:
+                logger.error(f"Error stopping server: {e}")
 
         # Close all clients
         async with self.clients_lock:
@@ -625,6 +652,7 @@ class MultiClientProxy:
             try:
                 self.radio_writer.close()
                 await self.radio_writer.wait_closed()
+                logger.info("Radio connection closed")
             except:
                 pass
 

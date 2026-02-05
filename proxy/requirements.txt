@@ -7,7 +7,8 @@ PyQt6>=6.4.0
 meshtastic>=2.2.0
 
 # For Gemini AI integration (optional)
-google-generativeai>=0.3.0
+# Using the new Google Generative AI SDK v2 (google-genai)
+google-genai>=0.2.0
 
 # Async networking
 asyncio-mqtt>=0.16.1
