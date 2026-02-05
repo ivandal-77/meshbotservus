@@ -122,8 +122,33 @@ The app requires:
 
 ### License and Credits
 
-Include appropriate license information and credits when distributing:
-- Your proxy code license
-- Meshtastic library license
-- PyQt6 license (GPL or commercial)
-- Third-party dependencies licenses
+**IMPORTANT - GPL v3 Requirements:**
+
+This application uses PyQt6, which is licensed under GPL v3. When distributing this application, you MUST:
+
+1. **Include source code access**: Provide a link to the source repository (https://github.com/ivandal-77/meshbotservus) or include the source code
+2. **Include license files**:
+   - Copy `LICENSE` file with the binary
+   - Copy `LICENSES.md` with third-party licenses
+3. **Maintain GPL**: Any derivative work must also be GPL v3
+4. **Provide installation instructions**: Users must be able to rebuild from source
+
+**Files to include with distribution:**
+```
+MeshtasticProxy.app/    (or .exe / binary)
+LICENSE                  (GPL v3)
+LICENSES.md             (Third-party licenses)
+README.md               (or README_GUI.md)
+```
+
+**Commercial Distribution:**
+If you want to distribute commercially without GPL obligations:
+- Purchase a commercial PyQt6 license from Riverbank Computing, OR
+- Use the CLI version without GUI (not subject to PyQt6 license), OR
+- Fork and replace PyQt6 with a non-GPL GUI framework
+
+**Attribution:**
+Please credit:
+- Meshtastic project
+- PyQt6/Qt framework
+- All dependencies listed in `LICENSES.md`
